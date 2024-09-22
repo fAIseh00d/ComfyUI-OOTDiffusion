@@ -163,6 +163,7 @@ class OOTDGenerate:
             width=384,
             height=512,
         )
+
         mask = mask.resize((768, 1024), Image.NEAREST)
         mask_gray = mask_gray.resize((768, 1024), Image.NEAREST)
 
@@ -189,10 +190,115 @@ class OOTDGenerate:
         return (output_image, masked_vton_img)
 
 
+class OOTDGenerateWithMask:
+    display_name = "OOTDiffusion Generate With Mask"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "pipe": ("MODEL",),
+                "cloth_image": ("IMAGE",),
+                "model_image": ("IMAGE",),
+                "mask_image": ("IMAGE",),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+                "cfg": (
+                    "FLOAT",
+                    {
+                        "default": 2.0,
+                        "min": 0.0,
+                        "max": 14.0,
+                        "step": 0.1,
+                        "round": 0.01,
+                    },
+                ),
+                "category": (list(_category_readable.keys()),),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("image", "image_masked")
+    FUNCTION = "generate"
+
+    CATEGORY = "OOTD"
+
+    def generate(
+        self, pipe: OOTDiffusion, cloth_image, model_image, mask_image, category, seed, steps, cfg
+    ):
+        category = _category_readable[category]
+        if pipe.model_type == "hd" and category != "upperbody":
+            raise ValueError(
+                "Half body (hd) model type can only be used with upperbody category"
+            )
+
+        # Convert input tensors to PIL Images
+        model_image = self._tensor_to_pil(model_image)
+        cloth_image = self._tensor_to_pil(cloth_image)
+        mask_image = self._tensor_to_pil(mask_image)
+
+        # Convert RGB mask to grayscale
+        mask = mask_image.convert("L")
+        
+        # Create mask_gray with half the intensity
+        mask_gray = Image.eval(mask, lambda x: x // 2)
+
+        # Resize images if needed
+        # Only resize if needed
+        target_size = (768, 1024)
+        
+        if model_image.size != target_size:
+            model_image = model_image.resize(target_size)
+        
+        if cloth_image.size != target_size:
+            cloth_image = cloth_image.resize(target_size)
+        
+        if mask.size != target_size:
+            mask = mask.resize(target_size, Image.NEAREST)
+        
+        if mask_gray.size != target_size:
+            mask_gray = mask_gray.resize(target_size, Image.NEAREST)
+
+        masked_vton_img = Image.composite(mask_gray, model_image, mask)
+        
+        images = pipe(
+            category=category,
+            image_garm=cloth_image,
+            image_vton=masked_vton_img,
+            mask=mask,
+            image_ori=model_image,
+            num_samples=1,
+            num_steps=steps,
+            image_scale=cfg,
+            seed=seed,
+        )
+
+        # Convert output images back to tensors
+        output_image = self._pil_to_tensor(images[0])
+        masked_vton_img = self._pil_to_tensor(masked_vton_img)
+
+        return (output_image, masked_vton_img)
+
+    @staticmethod
+    def _tensor_to_pil(image):
+        # (1,H,W,3) -> (3,H,W)
+        image = image.squeeze(0)
+        image = image.permute((2, 0, 1))
+        return to_pil_image(image)
+
+    @staticmethod
+    def _pil_to_tensor(image):
+        # PIL Image -> tensor(1,H,W,3)
+        image = image.convert("RGB")
+        tensor = to_tensor(image)
+        return tensor.permute((1, 2, 0)).unsqueeze(0)
+
+
 _export_classes = [
     LoadOOTDPipeline,
     LoadOOTDPipelineHub,
     OOTDGenerate,
+    OOTDGenerateWithMask,
 ]
 
 NODE_CLASS_MAPPINGS = {c.__name__: c for c in _export_classes}
